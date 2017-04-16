@@ -3,14 +3,15 @@
  * 
  * Using OneWire and Dallasprobe
  * 
- * OneWire Digital Pin D2
- * (D0,D1,D3,D4); //SCL(D0), SDA(D1), RST(RES), DC(DC)
- * Cooling relay Digital Pin 3
- * Heating relay Digital pin 4
+ * OneWire Temp Probe Digital Pin D2
+ * LCD Display (D0,D1,D3,D4); //SCL(D0), SDA(D1), RST(RES), DC(DC)
+ * Heating relay Digital Pin D5
+ * Cooling relay Digital pin D6
  * 
  * Reads first six bytes from EEPROM as Unit ID
  * Default min and max temperatures are in global varaibles.
  * Protection delays are in the variables
+ * 
  * MqTT io Key : 1f7cd97a8b974e40a843f14c5862f974
  * 
  * --------
@@ -24,6 +25,8 @@
 const char* ssid = "OakLaneCraftBrewery";
 const char* password = "kalleanka";
 
+
+//MQTT Config
 #include <Adafruit_MQTT.h>
 #include <Adafruit_MQTT_Client.h>
 
@@ -36,6 +39,10 @@ WiFiClient   client;
 Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT, AIO_USERNAME, AIO_KEY);
 Adafruit_MQTT_Publish templogger = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/temploggers");
 
+long mqttTimer = 30000; // Min delay between MQTT update
+long lastMqttUpdate = 0;
+
+// OLED Display
 #include <OLED.h>
 OLED OLED;
 
@@ -43,21 +50,24 @@ OLED OLED;
 #include <DallasTemperature.h>
 #include <EEPROM.h>  
 
+
+// Variables
  char idOut[] = {'_', '_', '_', '_', '_', '_'}; 
  String ID;
 int minTemp = 23; // min temp before heating turns on
 int maxTemp = 26; // max temp before cooling turns on
 long offCoolerTimeStamp;
 long offHeaterTimeStamp;
-String status = "no status";
+String status = "All Off!     ";
+char statusC[15] = "              ";
 int heaterPinValue;
 int coolerPinValue;
 long timeStamp;
 
 /***************** ONEWIRE and RELAY pins *********************/
 #define ONEWIRE_PIN D2
-#define COOLER_PIN 3
-#define HEATER_PIN 4
+#define HEATER_PIN D5
+#define COOLER_PIN D6
 #define MIN_OFF_COOLING_TIME 60000 // 1 mins * 60 sec * 1000 ms
 #define MIN_OFF_HEATER_TIME 60000 // 1 mins * 60 sec * 1000 ms
 
@@ -154,15 +164,16 @@ void setup() {
   Serial.println("Reset status, turn both heating and cooling off.");
 
   /* CODE TO TURN BOTH COOLING AND HEATING PIN TO LOW!!!!!! */
-  digitalWrite(COOLER_PIN,LOW);
-  digitalWrite(HEATER_PIN,LOW);
+  pinMode(HEATER_PIN, OUTPUT);
+  pinMode(COOLER_PIN, OUTPUT);
+  digitalWrite(COOLER_PIN, HIGH);
+  digitalWrite(HEATER_PIN,HIGH);
   offCoolerTimeStamp = millis();
   offHeaterTimeStamp = millis();
 }
 
 /* loop starts here */
 void loop() {
-  delay(2000);
 
   // get temp
   sensors.requestTemperatures();          // Get temperature
@@ -176,19 +187,24 @@ void loop() {
 
   //Write temp to OLED
   OLED.LED_P6x8Str(0,0,"Temperature :        ");
+  OLED.LED_P6x8Str(0,4,"Status :        ");
   OLED.LED_PrintValueF(0,2,tempC, 1);
+  status.toCharArray(statusC, 15);
+  OLED.LED_P6x8Str(0,6,statusC);
   
 // Sending data to IO.ADAFRUIT.COM via MQTT
-  MQTT_connect();
-  Serial.print(F("\Sending photocell val "));
-  Serial.print(tempC);
-  Serial.print("...");
-  if (! templogger.publish(tempC)) {
-    Serial.println(F("Failed"));
-  } else {
-    Serial.println(F("OK!"));
-  }
- 
+  if (millis() > (lastMqttUpdate + mqttTimer)){
+    MQTT_connect();
+    Serial.print(F("\Sending photocell val "));
+    Serial.print(tempC);
+    Serial.print("...");
+    if (! templogger.publish(tempC)) {
+      Serial.println(F("Failed"));
+    } else {
+      Serial.println(F("OK!"));
+    }
+    lastMqttUpdate = millis();
+  } 
   // WRITE CODE TO READ AND UPDATE NEW TARGET TEMP
 
 /* Logic for turing on and of heating / cooling */
@@ -199,14 +215,14 @@ if (tempC < minTemp) {
     if (status == "Cooling"){
         Serial.println("Turning cooling off.");
         //CODE TO TURN COOLING PIN TO LOW!!!!!!
-        digitalWrite(COOLER_PIN,LOW);
+        digitalWrite(COOLER_PIN, HIGH);
         offCoolerTimeStamp = millis();
         }
     Serial.println("Turning heating on.");
     timeStamp = millis();
     //CODE TO TURN HEATING PIN TO HIGH!!!!!!
     if (timeStamp-offHeaterTimeStamp >= MIN_OFF_HEATER_TIME) {
-      digitalWrite(HEATER_PIN,HIGH);    
+      digitalWrite(HEATER_PIN,LOW);    
       status = "Heating";
       }
       else {
@@ -223,14 +239,14 @@ if (tempC > maxTemp) {
     if (status == "Heating") {
       Serial.println("Turning heating off.");
       //CODE TO TURN HEATING PIN TO LOW!!!!!!
-      digitalWrite(HEATER_PIN,LOW);
+      digitalWrite(HEATER_PIN,HIGH);
       offHeaterTimeStamp = millis();
       }
     Serial.println("Turning cooling on.");
     timeStamp=millis();
     //CODE TO TURN COOLING PIN TO HIGH!!!!!!
     if (timeStamp-offCoolerTimeStamp >= MIN_OFF_COOLING_TIME) {
-      digitalWrite(COOLER_PIN,HIGH);
+      digitalWrite(COOLER_PIN,LOW);
       status = "Cooling";
       }
       else {
@@ -245,17 +261,19 @@ if (tempC >= minTemp && tempC <= maxTemp) {
   if (status == "Cooling") {
     Serial.println("Turning cooling off.");
     //CODE TO TURN COOLING PIN TO LOW!!!!!!
-    digitalWrite(COOLER_PIN,LOW);
+    digitalWrite(COOLER_PIN, HIGH);
     offCoolerTimeStamp = millis();
     }
   if (status == "Heating"){
     Serial.println("Turning heating off.");
     //CODE TO TURN HEATING PIN TO LOW!!!!!!
-    digitalWrite(HEATER_PIN,LOW);
+    digitalWrite(HEATER_PIN, HIGH);
     offHeaterTimeStamp = millis();
     }
-    status = "Nominal";
+    status = "All OFF!";
   }
+
+  delay(2000);
 
 /* End of program loop */
 }
